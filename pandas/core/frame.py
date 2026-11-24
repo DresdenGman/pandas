@@ -140,12 +140,14 @@ from pandas.core.array_algos.take import take_2d_multi
 from pandas.core.arraylike import OpsMixin
 from pandas.core.arrays import (
     BaseMaskedArray,
+    BooleanArray,
     DatetimeArray,
     ExtensionArray,
     NumpyExtensionArray,
     PeriodArray,
     TimedeltaArray,
 )
+from pandas.core.arrays.boolean import BooleanDtype
 from pandas.core.arrays.sparse import SparseFrameAccessor
 from pandas.core.arrays.string_ import StringDtype
 from pandas.core.computation.parsing import clean_column_name
@@ -10521,7 +10523,51 @@ class DataFrame(NDFrame, OpsMixin):
         if flex is not None and isinstance(right, DataFrame):
             if not left._indexed_same(right):
                 if flex:
+                    left_cols = left.columns
+                    right_cols = right.columns
                     left, right = left.align(right, join="outer", level=level)
+                    # GH#71478: alignment adds columns present on only one
+                    #  side as all-NaN float columns. For nullable boolean
+                    #  columns, keep the BooleanDtype (all-<NA>) instead,
+                    #  so that logical ops apply Kleene logic instead of
+                    #  casting NaN to True. Columns created by the
+                    #  alignment itself (e.g. level broadcasting) are left
+                    #  alone, as they have no source dtype to preserve.
+                    #  The two passes touch disjoint column sets (the first
+                    #  only replaces columns missing from left, the second
+                    #  only reads columns present in left), so the second
+                    #  pass never sees the first pass's replacements.
+                    for target, source, target_cols, source_cols in (
+                        (left, right, left_cols, right_cols),
+                        (right, left, right_cols, left_cols),
+                    ):
+                        for col in source.columns.unique():
+                            if col in target_cols or col not in source_cols:
+                                continue
+                            if col not in target.columns:
+                                continue
+                            source_loc = source.columns.get_loc(col)
+                            if not isinstance(source_loc, (int, np.integer)):
+                                # Duplicated label: leave the column as
+                                #  aligned (see below)
+                                continue
+                            if not isinstance(source[col].dtype, BooleanDtype):
+                                continue
+                            try:
+                                target_loc = target.columns.get_loc(col)
+                            except KeyError:
+                                continue
+                            if not isinstance(target_loc, (int, np.integer)):
+                                # Duplicated label: df[col] = ... is
+                                #  ambiguous when len(target) equals the
+                                #  duplicate count and can silently cast
+                                #  to object dtype, so leave the column
+                                #  as aligned
+                                continue
+                            target[col] = BooleanArray(
+                                np.zeros(len(target), dtype=bool),
+                                np.ones(len(target), dtype=bool),
+                            )
                 else:
                     raise ValueError(
                         "Can only compare identically-labeled (both index and columns) "

@@ -225,6 +225,75 @@ class TestDataFrameLogicalOperators:
         with pytest.raises(TypeError, match="unsupported operand type"):
             df1 & df2
 
+    @pytest.mark.parametrize(
+        "op, expected_a, expected_b",
+        [
+            (operator.or_, [True, None], [None, True]),
+            (operator.and_, [None, None], [None, None]),
+            (operator.xor, [None, None], [None, None]),
+        ],
+    )
+    def test_logical_ops_boolean_columns_alignment(self, op, expected_a, expected_b):
+        # GH#71478: alignment adds a missing boolean column as all-NaN
+        #  float; it must stay all-<NA> so Kleene logic applies
+        x = pd.DataFrame({"a": [True, pd.NA]}, dtype="boolean")
+        y = pd.DataFrame({"b": [pd.NA, True]}, dtype="boolean")
+
+        result = op(x, y)
+        expected = pd.DataFrame({"a": expected_a, "b": expected_b}, dtype="boolean")
+        tm.assert_frame_equal(result, expected)
+
+        # The operands themselves are unchanged
+        tm.assert_frame_equal(x, pd.DataFrame({"a": [True, pd.NA]}, dtype="boolean"))
+        tm.assert_frame_equal(y, pd.DataFrame({"b": [pd.NA, True]}, dtype="boolean"))
+
+    def test_logical_ops_boolean_columns_alignment_arithmetic(self):
+        # GH#71478: the alignment fix also affects arithmetic ops on
+        #  disjoint boolean columns, matching same-column behavior
+        x = pd.DataFrame({"a": [True, pd.NA]}, dtype="boolean")
+        y = pd.DataFrame({"b": [pd.NA, True]}, dtype="boolean")
+
+        result = x + y
+        expected = pd.DataFrame(
+            {"a": [pd.NA, pd.NA], "b": [pd.NA, pd.NA]}, dtype="boolean"
+        )
+        tm.assert_frame_equal(result, expected)
+
+        result = x.add(y, fill_value=True)
+        expected = pd.DataFrame(
+            {"a": [True, pd.NA], "b": [pd.NA, True]}, dtype="boolean"
+        )
+        tm.assert_frame_equal(result, expected)
+
+        with pytest.raises(TypeError, match="boolean subtract"):
+            x - y
+
+        with pytest.raises(NotImplementedError, match="not implemented for bool"):
+            x / y
+
+        with pytest.raises(NotImplementedError, match="not implemented for bool"):
+            x**y
+
+        with pytest.raises(NotImplementedError, match="not implemented for bool"):
+            x // y
+
+        result = x % y
+        expected = pd.DataFrame(
+            {"a": [pd.NA, pd.NA], "b": [pd.NA, pd.NA]}, dtype="Int8"
+        )
+        tm.assert_frame_equal(result, expected)
+
+        # Non-boolean disjoint columns are untouched by the fix
+        yf = pd.DataFrame({"b": [1.0, 2.0]}, dtype="float64")
+        result = x + yf
+        expected = pd.DataFrame(
+            {
+                "a": pd.array([pd.NA, pd.NA], dtype="boolean"),
+                "b": [np.nan, np.nan],
+            }
+        )
+        tm.assert_frame_equal(result, expected)
+
 
 @pytest.mark.parametrize("op", [operator.and_, operator.or_, operator.xor])
 @pytest.mark.parametrize("dtype", ["datetime64[ns]", "timedelta64[ns]"])
